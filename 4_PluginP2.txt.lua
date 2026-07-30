@@ -5,6 +5,7 @@
 --    - Visual
 --    - Server
 --    - Character
+--    - Fling Script (page with Input & Fling, Defense, Utility dropdowns)
 --  Run AFTER UNScripts_Host_UI loads.
 -- ============================================================
 
@@ -38,7 +39,7 @@ if not waitForHost() then
     return
 end
 
-if type(_G.UNS_CombinedCleanupP2) == "function" then _G.UNS_CombinedCleanupP2() end
+pcall(function() if type(_G.UNS_CombinedCleanupP2) == "function" then _G.UNS_CombinedCleanupP2() end end)
 
 -- ============================================================
 --  State Variables
@@ -65,19 +66,18 @@ local fovSetting = 70
 local lightObj = nil
 
 -- Character
-local antiFlingEnabled = false
-local antiFlingConn = nil
 local bangConn = nil
 local bangAnimTrack = nil
 local bangEnabled = false
 local headSitConn = nil
 local jerkToolRef = nil
-local jerkEnabled = false
+_G.jerkEnabled = false
 
 -- Server
 local antiAFKEnabled_IY = false
 local antiAFKConn_IY = nil
 local antiLagEnabled = false
+local origDescendantSettings = {}
 local origSettings = {}
 
 -- ============================================================
@@ -226,26 +226,6 @@ local function toggle2022Materials(state)
     end)
 end
 
-local function fakeout()
-    local c = chr()
-    if not c then return end
-    local clone = c:Clone()
-    clone.Parent = workspace
-    clone.Name = LocalPlayer.Name .. " (fake)"
-    local h = clone:FindFirstChildWhichIsA("Humanoid")
-    if h then
-        h.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-        task.spawn(function()
-            local r = getRoot(clone)
-            if r then
-                r.Velocity = Vector3.new(math.random(-50,50), 50, math.random(-50,50))
-            end
-            task.wait(5)
-            clone:Destroy()
-        end)
-    end
-end
-
 local function setDay()
     Lighting.ClockTime = 14
 end
@@ -298,24 +278,6 @@ end
 --  Character Functions
 -- ============================================================
 
-local function toggleAntiFling(state)
-    antiFlingEnabled = state
-    if antiFlingConn then antiFlingConn:Disconnect(); antiFlingConn = nil end
-    if state then
-        antiFlingConn = RunService.Stepped:Connect(function()
-            for _, player in pairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer and player.Character then
-                    for _, v in pairs(player.Character:GetDescendants()) do
-                        if v:IsA("BasePart") and not v:FindFirstAncestorOfClass("Accessory") then
-                            v.CanCollide = false
-                        end
-                    end
-                end
-            end
-        end)
-    end
-end
-
 local function toggleBang(state)
     bangEnabled = state
     if bangConn then bangConn:Disconnect(); bangConn = nil end
@@ -348,7 +310,7 @@ local function toggleBang(state)
 end
 
 local function toggleJerk(state)
-    jerkEnabled = state
+    _G.jerkEnabled = state
     if jerkToolRef then jerkToolRef:Destroy(); jerkToolRef = nil end
     if not state then return end
     local h = hum()
@@ -389,6 +351,7 @@ local function toggleJerk(state)
         end
     end)
 end
+_G.toggleJerk = toggleJerk
 
 local function toggleHeadsit(plrs, state)
     if headSitConn then headSitConn:Disconnect(); headSitConn = nil end
@@ -498,13 +461,23 @@ local function toggleAntiLag(state)
         settings().Rendering.QualityLevel = 1
         for _, v in pairs(game:GetDescendants()) do
             pcall(function()
-                if v:IsA("BasePart") then v.CastShadow = false; v.Material = Enum.Material.Plastic; v.Reflectance = 0
-                elseif v:IsA("Decal") then v.Transparency = 1; v.Texture = ""
-                elseif v:IsA("ParticleEmitter") or v:IsA("Trail") then v.Lifetime = NumberRange.new(0) end
+                if v:IsA("BasePart") then
+                    origDescendantSettings[v] = { CastShadow = v.CastShadow, Material = v.Material, Reflectance = v.Reflectance }
+                    v.CastShadow = false; v.Material = Enum.Material.Plastic; v.Reflectance = 0
+                elseif v:IsA("Decal") then
+                    origDescendantSettings[v] = { Transparency = v.Transparency, Texture = v.Texture }
+                    v.Transparency = 1; v.Texture = ""
+                elseif v:IsA("ParticleEmitter") or v:IsA("Trail") then
+                    origDescendantSettings[v] = { Lifetime = v.Lifetime }
+                    v.Lifetime = NumberRange.new(0)
+                end
             end)
         end
         for _, v in pairs(Lighting:GetDescendants()) do
-            if v:IsA("PostEffect") then v.Enabled = false end
+            if v:IsA("PostEffect") then
+                origDescendantSettings[v] = { Enabled = v.Enabled }
+                v.Enabled = false
+            end
         end
     else
         if origSettings.GlobalShadows ~= nil then Lighting.GlobalShadows = origSettings.GlobalShadows end
@@ -518,6 +491,20 @@ local function toggleAntiLag(state)
             terrain.WaterReflectance = origSettings.WaterReflectance
             terrain.WaterTransparency = origSettings.WaterTransparency
         end
+        for v, saved in pairs(origDescendantSettings) do
+            pcall(function()
+                if v:IsA("BasePart") then
+                    v.CastShadow = saved.CastShadow; v.Material = saved.Material; v.Reflectance = saved.Reflectance
+                elseif v:IsA("Decal") then
+                    v.Transparency = saved.Transparency; v.Texture = saved.Texture
+                elseif v:IsA("ParticleEmitter") or v:IsA("Trail") then
+                    v.Lifetime = saved.Lifetime
+                elseif v:IsA("PostEffect") then
+                    v.Enabled = saved.Enabled
+                end
+            end)
+        end
+        origDescendantSettings = {}
         origSettings = {}
     end
 end
@@ -563,10 +550,375 @@ aimAssistRender = RunService.RenderStepped:Connect(function()
 end)
 
 -- ============================================================
---  Build UI — 4 Collapsible Sections
+--  Fling Script Feature Implementations
+--  (Synced with FlingScriptUN.3 reference)
 -- ============================================================
 
-local tab = _G.UNScripts:CreateTab("Scripts P2")
+local touchFlingEnabled = false
+local antiFlingEnabled = false; local antiFlingConnections = {}
+local antiKillPartsEnabled = false; local antiKillPartsLoop = nil
+local strengthEnabled = false; local strengthConns = {}; local origPhysProps = {}
+local spActive = false; local spSavedPos = nil; local spCharConn = nil; local spDeathConn = nil
+local antiSlapEnabled = false
+local xenoAntiFlingEnabled = false; local xenoAntiFlingConn = nil
+local infinitePosEnabled = false; local infPosSaved = nil; local infPosConn = nil; local infPosCharConn = nil
+local afdEnabled = false; local afdConns = {}
+local antiSitEnabled = false; local antiSitCharConn = nil
+local antiRagdollEnabled = false; local antiRagdollDisconn = nil
+
+local function setupTouchFling(state)
+    touchFlingEnabled = state
+    if not state then return end
+    task.spawn(function()
+        while touchFlingEnabled do
+            RunService.Heartbeat:Wait()
+            local hrp = root()
+            if hrp then
+                local vel = hrp.Velocity
+                hrp.Velocity = vel * 1e35 + Vector3.new(0, 1e35, 0)
+                RunService.RenderStepped:Wait()
+                hrp.Velocity = vel
+                RunService.Stepped:Wait()
+                hrp.Velocity = vel + Vector3.new(0, 0.1, 0)
+            end
+        end
+    end)
+end
+
+local function setModelCanCollide(model, bval)
+    if not model then return end
+    for _, v in pairs(model:GetDescendants()) do
+        if v:IsA("BasePart") then v.CanCollide = bval end
+    end
+end
+
+local function setupAntiFling(state)
+    antiFlingEnabled = state
+    for _, conn in ipairs(antiFlingConnections) do conn:Disconnect() end
+    antiFlingConnections = {}
+    if not state then
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then setModelCanCollide(p.Character, true) end
+        end
+        return
+    end
+    local function monitor(p)
+        table.insert(antiFlingConnections, RunService.Stepped:Connect(function()
+            if antiFlingEnabled and p.Character then setModelCanCollide(p.Character, false) end
+        end))
+    end
+    for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer then monitor(p) end end
+    table.insert(antiFlingConnections, Players.PlayerAdded:Connect(function(plr)
+        table.insert(antiFlingConnections, RunService.Stepped:Connect(function()
+            if antiFlingEnabled and plr.Character then setModelCanCollide(plr.Character, false) end
+        end))
+    end))
+end
+
+local function setupAntiKillParts(state)
+    antiKillPartsEnabled = state
+    if antiKillPartsLoop then antiKillPartsLoop:Disconnect(); antiKillPartsLoop = nil end
+    if not state then return end
+    antiKillPartsLoop = RunService.Heartbeat:Connect(function()
+        if not antiKillPartsEnabled then return end
+        local hrp = root()
+        if hrp then
+            for _, part in ipairs(workspace:GetPartBoundsInRadius(hrp.Position, 10)) do
+                part.CanTouch = false
+            end
+        end
+    end)
+end
+
+local function cleanupStrength()
+    for _, conn in ipairs(strengthConns) do conn:Disconnect() end; strengthConns = {}
+    for part, props in pairs(origPhysProps) do
+        if part:IsA("BasePart") and part.Parent then part.CustomPhysicalProperties = props end
+    end; origPhysProps = {}
+end
+
+local function setupStrength(state)
+    strengthEnabled = state
+    cleanupStrength()
+    if not state then return end
+    local c = chr()
+    if not c then return end
+    for _, part in pairs(c:GetDescendants()) do
+        if part:IsA("BasePart") then
+            origPhysProps[part] = part.CustomPhysicalProperties or PhysicalProperties.new(0.7, 0.3, 0.5)
+            part.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5)
+            table.insert(strengthConns, part:GetPropertyChangedSignal("CustomPhysicalProperties"):Connect(function()
+                if strengthEnabled and (not part.CustomPhysicalProperties or part.CustomPhysicalProperties.Density < 100) then
+                    part.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5)
+                end
+            end))
+        end
+    end
+end
+
+local function spSetupConns()
+    if spCharConn then spCharConn:Disconnect(); spCharConn = nil end
+    if spDeathConn then spDeathConn:Disconnect(); spDeathConn = nil end
+    if not spActive then return end
+    spCharConn = LocalPlayer.CharacterAdded:Connect(function(char)
+        if not spActive then return end
+        local hrp = char:WaitForChild("HumanoidRootPart", 1)
+        if hrp and spSavedPos then task.wait(0.01); hrp.CFrame = spSavedPos end
+    end)
+    spDeathConn = RunService.Stepped:Connect(function()
+        local c = chr(); if not c then return end
+        local h = hum(); local hrp = root()
+        if spActive and h and h.Health <= 0 and hrp then spSavedPos = hrp.CFrame end
+    end)
+end
+
+local function setupSpawnpoint(state)
+    spActive = state
+    if state then
+        local hrp = root(); if hrp then spSavedPos = hrp.CFrame end
+        spSetupConns()
+    else
+        spSavedPos = nil
+        if spCharConn then spCharConn:Disconnect(); spCharConn = nil end
+        if spDeathConn then spDeathConn:Disconnect(); spDeathConn = nil end
+    end
+end
+
+local function dobv(v, char)
+    if not antiSlapEnabled then return end
+    local undo = false
+    if v:IsA("BodyAngularVelocity") then undo = true; v:Destroy()
+    elseif v:IsA("BodyGyro") and v.MaxTorque ~= Vector3.new(8999999488, 8999999488, 8999999488) and v.D ~= 500 and v.D ~= 50 and v.P ~= 90000 then undo = true; v:Destroy()
+    elseif v:IsA("BodyVelocity") and v.MaxForce ~= Vector3.new(8999999488, 8999999488, 8999999488) and v.Velocity ~= Vector3.new(0,0,0) then undo = true; v:Destroy()
+    elseif v:IsA("BasePart") then v.ChildAdded:Connect(function(v2) dobv(v2, char) end)
+    end
+    if undo and char and char:FindFirstChild("Humanoid") then char.Humanoid.Sit = false; char.Humanoid.PlatformStand = false end
+end
+
+local function dc(char)
+    if not antiSlapEnabled then return end
+    for _, v in pairs(char:GetChildren()) do
+        dobv(v, char)
+        for _, v2 in pairs(v:GetChildren()) do dobv(v2, char) end
+    end
+    char.ChildAdded:Connect(function(v) dobv(v, char) end)
+end
+
+local function setupAntiSlap(state)
+    antiSlapEnabled = state
+    local c = chr()
+    if c and state then dc(c) end
+end
+
+LocalPlayer.CharacterAdded:Connect(function(c)
+    if antiSlapEnabled then dc(c) end
+end)
+
+local function setupXenoAntiFling(state)
+    xenoAntiFlingEnabled = state
+    if xenoAntiFlingConn then xenoAntiFlingConn:Disconnect(); xenoAntiFlingConn = nil end
+    if not state then return end
+    xenoAntiFlingConn = RunService.Stepped:Connect(function()
+        pcall(function()
+            for _, p in pairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and p.Character then
+                    for _, v in pairs(p.Character:GetChildren()) do
+                        pcall(function()
+                            if v:IsA("BasePart") then
+                                v.CanCollide = false; v.Velocity = Vector3.zero; v.RotVelocity = Vector3.zero
+                                v.CustomPhysicalProperties = PhysicalProperties.new(0,0,0,0,0); v.Massless = true
+                            elseif v:IsA("Accessory") and v:FindFirstChild("Handle") then
+                                v.Handle.CanCollide = false; v.Handle.Velocity = Vector3.zero; v.Handle.RotVelocity = Vector3.zero
+                                v.Handle.CustomPhysicalProperties = PhysicalProperties.new(0,0,0,0,0); v.Handle.Massless = true
+                            end
+                        end)
+                    end
+                end
+            end
+        end)
+    end)
+end
+
+local function setupInfinitePosition(state)
+    infinitePosEnabled = state
+    if infPosConn then infPosConn:Disconnect(); infPosConn = nil end
+    if infPosCharConn then infPosCharConn:Disconnect(); infPosCharConn = nil end
+    if not state then infPosSaved = nil; return end
+    local hrp = root(); if hrp then infPosSaved = hrp.CFrame end
+    infPosConn = RunService.Heartbeat:Connect(function()
+        if not infinitePosEnabled or not infPosSaved then return end
+        local c = chr()
+        if c then
+            local r = root()
+            if r and (r.Position - infPosSaved.Position).Magnitude > 0.1 then
+                r.CFrame = infPosSaved; r.Velocity = Vector3.zero; r.RotVelocity = Vector3.zero
+            end
+        end
+    end)
+    infPosCharConn = LocalPlayer.CharacterAdded:Connect(function(char)
+        if not infinitePosEnabled then return end
+        local hrp = char:WaitForChild("HumanoidRootPart", 1)
+        if hrp and infPosSaved then task.wait(0.0001); hrp.CFrame = infPosSaved end
+    end)
+end
+
+local function setupAntiFallDamage(state)
+    afdEnabled = state
+    for _, conn in ipairs(afdConns) do conn:Disconnect() end; afdConns = {}
+    if not state then return end
+    local function setup(char)
+        if not char then return end
+        local hrp = char:WaitForChild("HumanoidRootPart", 1)
+        if not hrp then return end
+        local conn = RunService.Heartbeat:Connect(function()
+            if not hrp.Parent then conn:Disconnect(); return end
+            local vel = hrp.AssemblyLinearVelocity
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            RunService.RenderStepped:Wait()
+            hrp.AssemblyLinearVelocity = vel
+        end)
+        table.insert(afdConns, conn)
+    end
+    if chr() then setup(chr()) end
+    table.insert(afdConns, LocalPlayer.CharacterAdded:Connect(setup))
+end
+
+local function setupAntiSit(state)
+    antiSitEnabled = state
+    local h = hum()
+    if h then
+        h:SetStateEnabled(Enum.HumanoidStateType.Seated, not state)
+        if state then h.Sit = false end
+    end
+    if antiSitCharConn then antiSitCharConn:Disconnect(); antiSitCharConn = nil end
+    if state then
+        antiSitCharConn = LocalPlayer.CharacterAdded:Connect(function(char)
+            if not antiSitEnabled then return end
+            local h2 = char:WaitForChildOfClass("Humanoid")
+            h2:SetStateEnabled(Enum.HumanoidStateType.Seated, false); h2.Sit = false
+        end)
+    end
+end
+
+local function setupAntiRagdoll(state)
+    antiRagdollEnabled = state
+    if antiRagdollDisconn then antiRagdollDisconn(); antiRagdollDisconn = nil end
+    if not state then return end
+    local function setup(char)
+        local h = char:WaitForChild("Humanoid")
+        h.PlatformStand = false
+        local conns = {}
+        table.insert(conns, h.StateChanged:Connect(function(_, s)
+            if s == Enum.HumanoidStateType.Physics or s == Enum.HumanoidStateType.FallingDown or s == Enum.HumanoidStateType.Ragdoll then
+                h:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end
+        end))
+        table.insert(conns, h:GetPropertyChangedSignal("PlatformStand"):Connect(function()
+            if h.PlatformStand then h.PlatformStand = false end
+        end))
+        antiRagdollDisconn = function() for _, c in ipairs(conns) do c:Disconnect() end end
+    end
+    if chr() then setup(chr()) end
+    LocalPlayer.CharacterAdded:Connect(function()
+        if antiRagdollEnabled then setup(LocalPlayer.Character) end
+    end)
+end
+
+-- ============================================================
+--  Invisibility Feature Implementation
+--  (Synced with advanced_invis.lua reference)
+-- ============================================================
+
+local invisActive = false
+local invisParts = {}
+local invisConn = nil
+local invisCharConn = nil
+local invisToolConn = nil
+
+local function setupInvisParts()
+    invisParts = {}
+    local c = chr()
+    if c then
+        for _, v in pairs(c:GetDescendants()) do
+            if v:IsA("BasePart") and v.Transparency == 0 then table.insert(invisParts, v) end
+        end
+        if invisToolConn then invisToolConn:Disconnect() end
+        invisToolConn = c.DescendantAdded:Connect(function(v)
+            if v:IsA("BasePart") and v.Transparency == 0 then
+                table.insert(invisParts, v)
+                if invisActive then v.Transparency = 0.5 end
+            end
+        end)
+    end
+end
+
+local function setInvisPartsTransparency(state)
+    if state then
+        for _, v in pairs(invisParts) do
+            if v.Parent then v.Transparency = 0.5 end
+        end
+    else
+        for _, v in pairs(invisParts) do
+            if v.Parent then v.Transparency = 0 end
+        end
+        local c = chr()
+        if c then
+            for _, v in pairs(c:GetDescendants()) do
+                if v:IsA("BasePart") and v.Transparency == 0.5 then
+                    v.Transparency = 0
+                end
+            end
+        end
+    end
+end
+
+local function startInvisLoop()
+    if invisConn then invisConn:Disconnect() end
+    invisConn = RunService.Heartbeat:Connect(function()
+        if not invisActive then return end
+        local c = chr()
+        if not c then return end
+        local hrp = c:FindFirstChild("HumanoidRootPart")
+        local h = c:FindFirstChildOfClass("Humanoid")
+        if not hrp or not h or h.Health <= 0 then return end
+        local savedCF = hrp.CFrame
+        local savedOffset = h.CameraOffset
+        local below = savedCF * CFrame.new(0, -200000, 0)
+        local camOffset = below:ToObjectSpace(CFrame.new(savedCF.Position)).Position
+        hrp.CFrame = below
+        h.CameraOffset = camOffset
+        RunService.RenderStepped:Wait()
+        if hrp and h and hrp.Parent and h.Health > 0 then
+            hrp.CFrame = savedCF
+            h.CameraOffset = savedOffset
+        end
+    end)
+end
+
+local function stopInvisLoop()
+    if invisConn then invisConn:Disconnect(); invisConn = nil end
+end
+
+local autoReEnableInvis = false
+
+invisCharConn = LocalPlayer.CharacterAdded:Connect(function()
+    autoReEnableInvis = invisActive
+    invisActive = false
+    stopInvisLoop()
+    task.wait(0.5)
+    setupInvisParts()
+    if autoReEnableInvis then
+        invisActive = true
+        startInvisLoop()
+        setInvisPartsTransparency(true)
+    end
+end)
+
+-- ============================================================
+--  Build UI — Collapsible Sections
+-- ============================================================
+
+local tab = _G.UNScripts:CreateTab("Extras")
 
 -- Aim Assist
 local aa = tab:CreateSection("Aim Assist")
@@ -576,6 +928,7 @@ aa:CreateSlider("Aim Smoothness", 1, 100, 15, function(v) aimSmoothness = v / 10
 
 -- Visual
 local vis = tab:CreateSection("Visual")
+vis:CreateToggle("Anti Lag", toggleAntiLag)
 vis:CreateToggle("Fullbright", toggleFullBright)
 vis:CreateToggle("Rainbow Sky_IY", toggleRainbowSky_IY)
 vis:CreateToggle("Disable Shadows_IY", toggleShadows_IY)
@@ -588,7 +941,6 @@ vis:CreateSlider("Max Zoom", 0.5, 500, 200, setMaxZoom)
 vis:CreateSlider("Min Zoom", 0.5, 500, 0.5, setMinZoom)
 vis:CreateSlider("Cam Distance", 0, 500, 20, setCamDist)
 vis:CreateSlider("Brightness", 0, 10, 1, setBrightness)
-vis:CreateButton("Fakeout", fakeout)
 vis:CreateButton("Day", setDay)
 vis:CreateButton("Night", setNight)
 vis:CreateButton("4K Shader", apply4KShader)
@@ -601,21 +953,104 @@ srv:CreateButton("Remote Spy", openRemoteSpy)
 srv:CreateButton("Rejoin", rejoin)
 srv:CreateButton("Server Hop", serverHop)
 srv:CreateButton("Show Prompts", showPrompts)
-srv:CreateToggle("Anti Lag", toggleAntiLag)
 srv:CreateToggle("Anti-Afk", toggleAntiAFK_IY)
+srv:CreateButton("Respawn", function()
+    pcall(function() LocalPlayer.Character.Humanoid.Health = 0 end)
+end)
 
 -- Character
-local char = tab:CreateSection("Character")
-char:CreateToggle("Anti-Fling", toggleAntiFling)
+local char = tab:CreateSection("Fun Stuff")
 char:CreateToggle("Bang", toggleBang)
 char:CreateToggle("Jerk", toggleJerk)
 char:CreateToggle("Headsit", function(s)
     local plrs = getAllPlayers()
     toggleHeadsit(plrs, s)
 end)
-char:CreateButton("Respawn", function()
-    pcall(function() LocalPlayer.Character.Humanoid.Health = 0 end)
+
+-- Fling Script
+local flingSec = tab:CreateSection("Fling Script")
+flingSec:CreatePageButton("Fling Script", "Fling Script", function(api)
+
+    -- Input & Fling
+    local inputFling = api:CreateSection("Input & Fling")
+    inputFling:CreateToggle("Touch Fling", function(state)
+        setupTouchFling(state)
+    end)
+    inputFling:CreateToggle("Anti Fling", function(state)
+        setupAntiFling(state)
+    end)
+    inputFling:CreateToggle("Anti Kill Parts", function(state)
+        setupAntiKillParts(state)
+    end)
+
+    -- Defense
+    local defense = api:CreateSection("Defense")
+    defense:CreateToggle("Strength", function(state)
+        setupStrength(state)
+    end)
+    defense:CreateToggle("Spawnpoint", function(state)
+        setupSpawnpoint(state)
+    end)
+    defense:CreateToggle("Anti Slap", function(state)
+        setupAntiSlap(state)
+    end)
+    defense:CreateToggle("Xeno AntiFling", function(state)
+        setupXenoAntiFling(state)
+    end)
+    defense:CreateToggle("Infinite Position", function(state)
+        setupInfinitePosition(state)
+    end)
+    defense:CreateToggle("Anti Fall Damage", function(state)
+        setupAntiFallDamage(state)
+    end)
+
+    -- Utility
+    local utility = api:CreateSection("Utility")
+    utility:CreateToggle("Anti Sit", function(state)
+        setupAntiSit(state)
+    end)
+    utility:CreateToggle("Anti Ragdoll", function(state)
+        setupAntiRagdoll(state)
+    end)
 end)
+
+-- Invisibility
+local invisSec = tab:CreateSection("Invisibility")
+invisSec:CreateToggle("Invisible", function(state)
+    invisActive = state
+    if state then
+        setupInvisParts()
+        startInvisLoop()
+        setInvisPartsTransparency(true)
+    else
+        stopInvisLoop()
+        setInvisPartsTransparency(false)
+        autoReEnableInvis = false
+    end
+end)
+
+-- ============================================================
+--  Keybind Registrations
+-- ============================================================
+if _G.UNS_AddScriptShortcut then
+    _G.UNS_AddScriptShortcut("Aim Assist", function()
+        local new = not aimAssistEnabled; aimAssistEnabled = new
+        if _G.UNScripts and _G.UNScripts.SetToggleByLabel then _G.UNScripts.SetToggleByLabel("Aim Assist", new) end
+    end)
+    _G.UNS_AddScriptShortcut("Invisible", function()
+        local new = not invisActive
+        invisActive = new
+        if new then
+            setupInvisParts()
+            startInvisLoop()
+            setInvisPartsTransparency(true)
+        else
+            stopInvisLoop()
+            setInvisPartsTransparency(false)
+        end
+        if _G.UNScripts and _G.UNScripts.SetToggleByLabel then _G.UNScripts.SetToggleByLabel("Invisible", new) end
+    end)
+end
 
 -- ============================================================
 --  Cleanup
@@ -629,11 +1064,30 @@ local combinedCleanupP2 = function()
     if rainbowSkyEnabled_IY then toggleRainbowSky_IY(false) end
     if shadowsDisabled_IY then toggleShadows_IY(false) end
     if lightObj then toggleLight(false) end
-    toggleAntiFling(false); toggleBang(false); toggleJerk(false)
+    toggleBang(false); toggleJerk(false)
     toggleHeadsit({}, false)
 
-    if antiLagEnabled then toggleAntiLag(false) end
     toggleAntiAFK_IY(false)
+    if antiLagEnabled then toggleAntiLag(false) end
+
+    touchFlingEnabled = false
+    setupAntiFling(false)
+    if antiKillPartsLoop then antiKillPartsLoop:Disconnect(); antiKillPartsLoop = nil end
+    setupStrength(false)
+    setupSpawnpoint(false)
+    setupAntiSlap(false)
+    setupXenoAntiFling(false)
+    if infPosConn then infPosConn:Disconnect(); infPosConn = nil end
+    if infPosCharConn then infPosCharConn:Disconnect(); infPosCharConn = nil end
+    setupAntiFallDamage(false)
+    setupAntiSit(false)
+    if antiRagdollDisconn then antiRagdollDisconn(); antiRagdollDisconn = nil end
+    local h = hum()
+    if h then
+        h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+        h:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+        h.BreakJointsOnDeath = true
+    end
 
     pcall(function()
         local sg = StarterGui:FindFirstChild("UNS_4K_Shader")
@@ -643,4 +1097,4 @@ end
 _G.UNS_CombinedCleanupP2 = combinedCleanupP2
 table.insert(_G.UNS_CleanupList, combinedCleanupP2)
 
-print("[Combined Plugin P2] Features organized under 4 dropdown sections")
+print("[Combined Plugin P2] Features organized under dropdown sections + Fling Script page")
