@@ -65,6 +65,21 @@ local ESP_Settings = {
 }
 local ESP_ColorState = { H = 0, S = 1, V = 1 }
 
+-- Walk Speed state
+local wsCfg = {
+    enabled = false, preToggleSpeed = 16, currentSpeed = 16, gameDefaultSpeed = 16,
+    speedIncrement = 2, maxSpeedLimit = 100, extremeSpeed = false,
+    instantStop = false, cframeBypass = false,
+    minSpeed = 0,
+}
+local wsRun = true
+local wsHoldingUp = false
+local wsHoldingDown = false
+local wsLastUpTime = 0
+local wsLastDownTime = 0
+local WS_HOLD_RATE = 0.12
+local wsSliderUpdater = nil
+
 local ESP_SAVE_FILE = "UNScripts/esp_settings.json"
 local ESP_SAVE_VERSION = 2
 
@@ -227,6 +242,11 @@ local function injectF3X()
     end
 end
 
+_G.toggleF3X = function(state)
+    f3xEnabled = state
+    if state then injectF3X() else clearF3XTools() end
+end
+
 local function clearTPTool()
     local bp = LocalPlayer:FindFirstChild("Backpack")
     if bp then
@@ -273,6 +293,24 @@ local function toggleNoclip(state)
             if c then
                 for _, child in pairs(c:GetDescendants()) do
                     if child:IsA("BasePart") then child.CanCollide = false end
+                end
+            end
+        end)
+    end
+end
+
+local function toggleAntiFling(state)
+    antiFlingEnabled = state
+    if antiFlingConn then antiFlingConn:Disconnect(); antiFlingConn = nil end
+    if state then
+        antiFlingConn = RunService.Stepped:Connect(function()
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character then
+                    for _, v in pairs(player.Character:GetDescendants()) do
+                        if v:IsA("BasePart") and not v:FindFirstAncestorOfClass("Accessory") then
+                            v.CanCollide = false
+                        end
+                    end
                 end
             end
         end)
@@ -953,6 +991,9 @@ local function setupToolWatchers()
             if child.Name == "TPTool" then
                 onToolRemoved("TPTool", "TPTool")
             end
+            if child.Name == "Jerk Off" then
+                onToolRemoved("Jerk Off", "Jerk")
+            end
         end)
     end
     if char then
@@ -962,6 +1003,9 @@ local function setupToolWatchers()
             end
             if child.Name == "TPTool" then
                 onToolRemoved("TPTool", "TPTool")
+            end
+            if child.Name == "Jerk Off" then
+                onToolRemoved("Jerk Off", "Jerk")
             end
         end)
     end
@@ -977,12 +1021,16 @@ local function setupRespawnHandlers()
         if _G.UNScripts and _G.UNScripts.SaveInventory then
             if f3xEnabled then injectF3X() end
             if tptoolActive then injectTPTool() end
+            if _G.jerkEnabled and _G.toggleJerk then _G.toggleJerk(true) end
         else
             if _G.UNScripts and _G.UNScripts.GetToggleState and _G.UNScripts.GetToggleState("F3X") then
                 _G.UNScripts.SetToggleByLabel("F3X", false)
             end
             if _G.UNScripts and _G.UNScripts.GetToggleState and _G.UNScripts.GetToggleState("TPTool") then
                 _G.UNScripts.SetToggleByLabel("TPTool", false)
+            end
+            if _G.UNScripts and _G.UNScripts.GetToggleState and _G.UNScripts.GetToggleState("Jerk") then
+                _G.UNScripts.SetToggleByLabel("Jerk", false)
             end
         end
     end)
@@ -994,27 +1042,26 @@ setupRespawnHandlers()
 --  Build UI — Single Tab with All Sections
 -- ============================================================
 
-local tab = _G.UNScripts:CreateTab("Scripts")
-local tpCards = {}
+local tab = _G.UNScripts:CreateTab("Main")
 local tpWaypoints = {}
-local cpCards = {}
+local tpPlayerConns = {}
+local antiFlingEnabled = false
+local antiFlingConn = nil
 
 -- Movement
 local mov = tab:CreateSection("Movement")
-mov:CreateToggle("Click Teleport", toggleClickTeleport)
 mov:CreateToggle("Noclip", toggleNoclip)
-mov:CreateToggle("Vfly", toggleVfly)
-
-mov:CreateSlider("Fly Speed", 1, 150, 50, function(v)
-    vflyMultiplier = v
-
-end)
 mov:CreateToggle("Float", toggleFloat)
+mov:CreateToggle("Anti-Fling", toggleAntiFling)
 mov:CreateSlider("WalkSpeed", 16, 500, 16, function(v)
     pcall(function() LocalPlayer.Character.Humanoid.WalkSpeed = v end)
 end)
 mov:CreateSlider("JumpPower", 50, 500, 50, function(v)
     pcall(function() local h = LocalPlayer.Character.Humanoid; h.UseJumpPower = true; h.JumpPower = v end)
+end)
+mov:CreateToggle("Vfly", toggleVfly)
+mov:CreateSlider("Fly Speed", 1, 150, 50, function(v)
+    vflyMultiplier = v
 end)
 mov:CreateButton("Infinite Jump", function()
     pcall(function()
@@ -1028,43 +1075,236 @@ tel:CreateToggle("TPTool", function(state)
     tptoolActive = state
     if state then injectTPTool() else clearTPTool() end
 end)
+tel:CreateToggle("Click Teleport", toggleClickTeleport)
 tel:CreatePageButton("Teleport Menu", "Teleport", function(page)
+    for _, conn in ipairs(tpPlayerConns) do
+        pcall(function() conn:Disconnect() end)
+    end
+    tpPlayerConns = {}
+
+    local C = {
+        surfaceAlt = Color3.fromRGB(40, 40, 40),
+        border = Color3.fromRGB(45, 45, 52),
+        accent = Color3.fromRGB(50, 120, 255),
+        textPri = Color3.fromRGB(218, 218, 222),
+        textSec = Color3.fromRGB(115, 115, 128),
+    }
+
+    local function makePill(parent, text, lo)
+        local pill = Instance.new("Frame")
+        pill.Size = UDim2.new(1, -8, 0, 32)
+        pill.BackgroundColor3 = C.surfaceAlt
+        pill.BackgroundTransparency = 0.1
+        pill.BorderSizePixel = 0
+        pill.LayoutOrder = lo
+        pill.Parent = parent
+        Instance.new("UICorner", pill).CornerRadius = UDim.new(1, 0)
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = C.border; stroke.Thickness = 1; stroke.Transparency = 0.4
+        stroke.Parent = pill
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(0, 120, 1, 0); lbl.Position = UDim2.new(0, 14, 0, 0)
+        lbl.BackgroundTransparency = 1; lbl.Text = text
+        lbl.TextColor3 = C.textPri; lbl.TextSize = 11
+        lbl.Font = Enum.Font.GothamSemibold
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Parent = pill
+        return pill
+    end
+
+    local function addBtn(pill, cb, txt)
+        txt = txt or "TP"
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0, 70, 0, 22)
+        btn.Position = UDim2.new(1, -80, 0.5, -11)
+        btn.BackgroundColor3 = C.accent; btn.BackgroundTransparency = 0.1
+        btn.Text = txt; btn.TextColor3 = Color3.new(1, 1, 1)
+        btn.TextSize = 10; btn.Font = Enum.Font.GothamBold
+        btn.Parent = pill
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+        btn.MouseButton1Click:Connect(cb)
+    end
+
+    local lo = 0
+
+    lo = lo + 1
     page:CreateLabel("Players")
-    page:CreateButton("Refresh List", function()
-        for _, c in ipairs(tpCards) do pcall(function() c:Destroy() end) end
-        tpCards = {}
+
+    lo = lo + 1
+    local pFrame = Instance.new("Frame")
+    pFrame.Size = UDim2.new(1, -8, 0, 0)
+    pFrame.BackgroundTransparency = 1; pFrame.BorderSizePixel = 0
+    pFrame.LayoutOrder = lo; pFrame.Parent = _G.UNS_PageScroll
+    local pLayout = Instance.new("UIListLayout")
+    pLayout.Padding = UDim.new(0, 5); pLayout.Parent = pFrame
+
+    local function refreshPlayers()
+        for _, c in ipairs(pFrame:GetChildren()) do
+            if c:IsA("Frame") then c:Destroy() end
+        end
+        local po = 0
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LocalPlayer then
-                page:CreateButton("TP to " .. p.Name, function()
+                po = po + 1
+                local pill = Instance.new("Frame")
+                pill.Size = UDim2.new(1, -8, 0, 36)
+                pill.BackgroundColor3 = C.surfaceAlt
+                pill.BackgroundTransparency = 0.1
+                pill.BorderSizePixel = 0
+                pill.LayoutOrder = po
+                pill.Parent = pFrame
+                Instance.new("UICorner", pill).CornerRadius = UDim.new(1, 0)
+                local stroke = Instance.new("UIStroke")
+                stroke.Color = C.border; stroke.Thickness = 1; stroke.Transparency = 0.4
+                stroke.Parent = pill
+                local headshot = Instance.new("ImageLabel")
+                headshot.Size = UDim2.new(0, 28, 0, 28)
+                headshot.Position = UDim2.new(0, 6, 0.5, -14)
+                headshot.BackgroundTransparency = 1
+                headshot.Image = "rbxthumb://type=AvatarHeadShot&id=" .. p.UserId .. "&w=48&h=48"
+                headshot.Parent = pill
+                local lbl = Instance.new("TextLabel")
+                lbl.Size = UDim2.new(1, -170, 1, 0)
+                lbl.Position = UDim2.new(0, 40, 0, 0)
+                lbl.BackgroundTransparency = 1
+                lbl.Text = p.Name
+                lbl.TextColor3 = C.textPri; lbl.TextSize = 11
+                lbl.Font = Enum.Font.GothamSemibold
+                lbl.TextXAlignment = Enum.TextXAlignment.Left
+                lbl.Parent = pill
+                local btn = Instance.new("TextButton")
+                btn.Size = UDim2.new(0, 70, 0, 22)
+                btn.Position = UDim2.new(1, -80, 0.5, -11)
+                btn.BackgroundColor3 = C.accent; btn.BackgroundTransparency = 0.1
+                btn.Text = "TP"; btn.TextColor3 = Color3.new(1, 1, 1)
+                btn.TextSize = 10; btn.Font = Enum.Font.GothamBold
+                btn.Parent = pill
+                Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+                btn.MouseButton1Click:Connect(function()
                     pcall(function()
-                        local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                        local thRoot = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-                        if myRoot and thRoot then myRoot.CFrame = thRoot.CFrame * CFrame.new(0,0,3) end
+                        local mr = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                        local pr = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+                        if mr and pr then mr.CFrame = pr.CFrame * CFrame.new(0, 0, 3) end
                     end)
                 end)
             end
         end
-    end)
+        pFrame.Size = UDim2.new(1, -8, 0, po > 0 and (po * 41 - 5) or 0)
+    end
+
+    refreshPlayers()
+    table.insert(tpPlayerConns, Players.PlayerAdded:Connect(refreshPlayers))
+    table.insert(tpPlayerConns, Players.PlayerRemoving:Connect(refreshPlayers))
+
+    lo = lo + 1
     page:CreateLabel("Checkpoints")
-    page:CreateButton("Save Checkpoint", function()
+
+    lo = lo + 1
+    local savePill = makePill(_G.UNS_PageScroll, "Save Checkpoint", lo)
+
+    local function rebuildCpPills()
+        local scroll = _G.UNS_PageScroll
+        if not scroll then return end
+        for _, c in ipairs(scroll:GetChildren()) do
+            if c.Name == "UNS_CpPill" then c:Destroy() end
+        end
+        for i, wp in ipairs(tpWaypoints) do
+            makeCpPill(i, wp, scroll)
+        end
+    end
+
+    local function makeCpPill(index, wp, parent)
+        local pill = Instance.new("Frame")
+        pill.Name = "UNS_CpPill"
+        pill.Size = UDim2.new(1, -8, 0, 32)
+        pill.BackgroundColor3 = C.surfaceAlt
+        pill.BackgroundTransparency = 0.1
+        pill.BorderSizePixel = 0
+        pill.LayoutOrder = 9000 + index
+        pill.Parent = parent
+        pill:SetAttribute("CpIdx", index)
+        Instance.new("UICorner", pill).CornerRadius = UDim.new(1, 0)
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = C.border; stroke.Thickness = 1; stroke.Transparency = 0.4
+        stroke.Parent = pill
+
+        local nameBox = Instance.new("TextBox")
+        nameBox.Size = UDim2.new(1, -170, 1, 0); nameBox.Position = UDim2.new(0, 14, 0, 0)
+        nameBox.BackgroundTransparency = 1; nameBox.Text = wp.Name
+        nameBox.TextColor3 = C.textPri; nameBox.TextSize = 11
+        nameBox.Font = Enum.Font.GothamSemibold
+        nameBox.TextXAlignment = Enum.TextXAlignment.Left
+        nameBox.ClearTextOnFocus = false
+        nameBox.Parent = pill
+        nameBox.FocusLost:Connect(function(enterPressed)
+            if enterPressed then
+                local cpIdx = pill:GetAttribute("CpIdx")
+                if cpIdx and tpWaypoints[cpIdx] then
+                    tpWaypoints[cpIdx].Name = nameBox.Text
+                end
+            else
+                nameBox.Text = wp.Name
+            end
+        end)
+
+        local delBtn = Instance.new("TextButton")
+        delBtn.Size = UDim2.new(0, 65, 0, 22)
+        delBtn.Position = UDim2.new(1, -155, 0.5, -11)
+        delBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+        delBtn.BackgroundTransparency = 0.1
+        delBtn.Text = "Del"; delBtn.TextColor3 = Color3.new(1, 1, 1)
+        delBtn.TextSize = 10; delBtn.Font = Enum.Font.GothamBold
+        delBtn.Parent = pill
+        Instance.new("UICorner", delBtn).CornerRadius = UDim.new(0, 4)
+        delBtn.MouseButton1Click:Connect(function()
+            local p = delBtn.Parent
+            if not p then return end
+            local idx = p:GetAttribute("CpIdx")
+            if idx and idx >= 1 and idx <= #tpWaypoints then
+                table.remove(tpWaypoints, idx)
+                p:Destroy()
+                local newIdx = 0
+                for _, c in ipairs(_G.UNS_PageScroll:GetChildren()) do
+                    if c.Name == "UNS_CpPill" then
+                        newIdx = newIdx + 1
+                        c.LayoutOrder = 9000 + newIdx
+                        c:SetAttribute("CpIdx", newIdx)
+                    end
+                end
+            end
+        end)
+
+        local tpBtn = Instance.new("TextButton")
+        tpBtn.Size = UDim2.new(0, 65, 0, 22)
+        tpBtn.Position = UDim2.new(1, -80, 0.5, -11)
+        tpBtn.BackgroundColor3 = C.accent; tpBtn.BackgroundTransparency = 0.1
+        tpBtn.Text = "TP"; tpBtn.TextColor3 = Color3.new(1, 1, 1)
+        tpBtn.TextSize = 10; tpBtn.Font = Enum.Font.GothamBold
+        tpBtn.Parent = pill
+        Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 4)
+        tpBtn.MouseButton1Click:Connect(function()
+            pcall(function()
+                local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if root then root.CFrame = wp.CFrame end
+            end)
+        end)
+
+        return pill
+    end
+
+    addBtn(savePill, function()
         local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         if root then
-            local name = "CP #" .. #tpWaypoints + 1
+            local name = "CP #" .. (#tpWaypoints + 1)
             table.insert(tpWaypoints, {Name = name, CFrame = root.CFrame})
+            local scroll = _G.UNS_PageScroll
+            if scroll then
+                makeCpPill(#tpWaypoints, tpWaypoints[#tpWaypoints], scroll)
+            end
         end
-    end)
-    page:CreateButton("Refresh Checkpoints", function()
-        for _, c in ipairs(cpCards) do pcall(function() c:Destroy() end) end
-        cpCards = {}
-        for i, wp in ipairs(tpWaypoints) do
-            page:CreateButton("TP to " .. wp.Name, function()
-                pcall(function()
-                    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    if root then root.CFrame = wp.CFrame end
-                end)
-            end)
-        end
-    end)
+    end, "Save")
+
+    rebuildCpPills()
 end)
 
 -- ESP
@@ -1077,11 +1317,277 @@ esp:CreatePageButton("Advanced ESP Settings", "ESP Settings", setupESPSettingsPa
 
 -- Misc
 local misc = tab:CreateSection("Misc")
-
 misc:CreateToggle("F3X", function(state)
-    f3xEnabled = state
-    if state then injectF3X() else clearF3XTools() end
+    if _G.toggleF3X then _G.toggleF3X(state) end
 end)
+
+-- ============================================================
+--  UNWalk Speed — Full Advanced Walk Speed V7 Integration
+-- ============================================================
+local function wsGetLimit()
+    return wsCfg.extremeSpeed and 99999 or wsCfg.maxSpeedLimit
+end
+
+local function wsApplySpeed(speed)
+    wsCfg.currentSpeed = math.clamp(speed, wsCfg.minSpeed, wsGetLimit())
+    if wsSliderUpdater then pcall(wsSliderUpdater, wsCfg.currentSpeed, wsGetLimit(), wsCfg.minSpeed) end
+    if not wsCfg.enabled or wsCfg.cframeBypass then return end
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hum then hum.WalkSpeed = wsCfg.currentSpeed end
+end
+
+local function wsCreateBV(char)
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local e = hrp:FindFirstChild("AwsBodyVel")
+    if e then e:Destroy() end
+    local bv = Instance.new("BodyVelocity")
+    bv.Name = "AwsBodyVel"; bv.MaxForce = Vector3.new(math.huge, 0, math.huge)
+    bv.Velocity = Vector3.zero; bv.P = 10000; bv.Parent = hrp
+    return bv
+end
+
+local function wsDestroyBV(char)
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then local bv = hrp:FindFirstChild("AwsBodyVel"); if bv then bv:Destroy() end end
+end
+
+local wsHeartbeatConn, wsStopConn
+
+local function wsStartCFrame()
+    if wsHeartbeatConn then return end
+    local char = LocalPlayer.Character; if not char then return end
+    wsCreateBV(char)
+    wsHeartbeatConn = RunService.Heartbeat:Connect(function()
+        if not wsCfg.cframeBypass or not wsCfg.enabled then return end
+        local ch = LocalPlayer.Character; if not ch then return end
+        local hum = ch:FindFirstChildOfClass("Humanoid"); if not hum then return end
+        hum.WalkSpeed = wsCfg.gameDefaultSpeed
+        local hrp = ch:FindFirstChild("HumanoidRootPart"); if not hrp then return end
+        local bv = hrp:FindFirstChild("AwsBodyVel")
+        if not bv then bv = wsCreateBV(ch); if not bv then return end end
+        local md = hum.MoveDirection
+        bv.Velocity = md.Magnitude > 0.01 and Vector3.new(md.X, 0, md.Z).Unit * wsCfg.currentSpeed or Vector3.zero
+    end)
+end
+
+local function wsStopCFrame()
+    if wsHeartbeatConn then wsHeartbeatConn:Disconnect(); wsHeartbeatConn = nil end
+    wsDestroyBV(LocalPlayer.Character)
+end
+
+local function wsStartStopLoop()
+    if wsStopConn then return end
+    wsStopConn = RunService.Heartbeat:Connect(function()
+        if not wsCfg.enabled or not wsCfg.instantStop then return end
+        local moving = UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.A)
+            or UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.D)
+        if moving then return end
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local v = hrp.Velocity
+            if Vector3.new(v.X, 0, v.Z).Magnitude > 0.5 then hrp.Velocity = Vector3.new(0, v.Y, 0) end
+        end
+    end)
+end
+
+local function wsStopInstantStop()
+    if wsStopConn then wsStopConn:Disconnect(); wsStopConn = nil end
+end
+
+-- Speed enforcement loop
+task.spawn(function()
+    while wsRun do
+        task.wait(0.3)
+        if not wsCfg.enabled or wsCfg.cframeBypass then continue end
+        if wsCfg.currentSpeed < wsCfg.minSpeed then
+            wsApplySpeed(wsCfg.minSpeed)
+        end
+        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum and hum.WalkSpeed ~= wsCfg.currentSpeed then hum.WalkSpeed = wsCfg.currentSpeed end
+    end
+end)
+
+-- CFrame bypass state watcher
+task.spawn(function()
+    local lastBypass = false
+    while wsRun do
+        task.wait(0.1)
+        local should = wsCfg.cframeBypass and wsCfg.enabled
+        if should and not lastBypass then wsStartCFrame() end
+        if not should and lastBypass then wsStopCFrame() end
+        lastBypass = should
+    end
+end)
+
+-- Instant stop state watcher
+task.spawn(function()
+    local lastStop = false
+    while wsRun do
+        task.wait(0.1)
+        local should = wsCfg.instantStop and wsCfg.enabled
+        if should and not lastStop then wsStartStopLoop() end
+        if not should and lastStop then wsStopInstantStop() end
+        lastStop = should
+    end
+end)
+
+-- Character respawn
+LocalPlayer.CharacterAdded:Connect(function(char)
+    task.wait(1.5)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if not hum then return end
+    wsCfg.gameDefaultSpeed = hum.WalkSpeed
+    hum.WalkSpeed = wsCfg.enabled and (wsCfg.cframeBypass and wsCfg.gameDefaultSpeed or wsCfg.currentSpeed) or wsCfg.gameDefaultSpeed
+end)
+
+-- Initial setup
+task.spawn(function()
+    task.wait(2)
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hum then wsCfg.gameDefaultSpeed = hum.WalkSpeed end
+    if wsCfg.enabled then wsApplySpeed(wsCfg.currentSpeed) end
+end)
+
+-- UNWalk Speed UI
+local awsSec = tab:CreateSection("UNWalk Speed")
+awsSec:CreatePageButton("UNWalk Speed", "UNWalk Speed", function(page)
+    local mainSec = page:CreateSection("Main Toggle")
+    mainSec:CreateToggle("Advanced Walk Speed", function(state)
+        wsCfg.enabled = state
+        if not state then
+            wsCfg.preToggleSpeed = wsCfg.currentSpeed
+            local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = wsCfg.gameDefaultSpeed end
+        else
+            wsCfg.currentSpeed = wsCfg.preToggleSpeed
+            wsApplySpeed(wsCfg.currentSpeed)
+        end
+    end, wsCfg.enabled)
+
+    local sc = page:CreateSection("Speed Control")
+    sc:CreateSlider("Current Speed", 0, 500, wsCfg.currentSpeed, function(v)
+        wsApplySpeed(v)
+    end)
+    if _G.UNS_SliderSetVal then
+        wsSliderUpdater = _G.UNS_SliderSetVal["Current Speed"]
+        if wsSliderUpdater then pcall(wsSliderUpdater, wsCfg.currentSpeed, wsGetLimit(), wsCfg.minSpeed) end
+    end
+    sc:CreateSlider("Speed Increment", 1, 50, wsCfg.speedIncrement, function(v)
+        wsCfg.speedIncrement = v
+    end)
+    sc:CreateSlider("Speed Cap / Limit", 16, 500, wsCfg.maxSpeedLimit, function(v)
+        wsCfg.maxSpeedLimit = v
+        if not wsCfg.extremeSpeed and wsCfg.currentSpeed > v then
+            wsApplySpeed(v)
+        end
+        if wsSliderUpdater then pcall(wsSliderUpdater, wsCfg.currentSpeed, wsGetLimit(), wsCfg.minSpeed) end
+    end)
+    sc:CreateSlider("Minimum Speed", 0, 50, wsCfg.minSpeed, function(v)
+        wsCfg.minSpeed = v
+    end)
+
+    local fc = page:CreateSection("Features")
+    fc:CreateToggle("Instant Stop", function(state)
+        wsCfg.instantStop = state
+    end, wsCfg.instantStop)
+    fc:CreateToggle("EXTREME SPEED MODE", function(state)
+        wsCfg.extremeSpeed = state; wsApplySpeed(wsCfg.currentSpeed)
+    end, wsCfg.extremeSpeed)
+    fc:CreateToggle("CFrame Walking (Bypass)", function(state)
+        wsCfg.cframeBypass = state
+        if not state then
+            local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = wsCfg.currentSpeed end
+        end
+    end, wsCfg.cframeBypass)
+
+    local pc = page:CreateSection("Quick Presets")
+    local presets = {{"Walk", 16}, {"Sprint", 32}, {"Mach 1", 100}, {"Mach 2", 200}, {"Mach 3", 500}, {"Mach 5", 1000}}
+    for _, p in ipairs(presets) do
+        pc:CreateButton(p[1] .. " (" .. p[2] .. ")", function() wsApplySpeed(p[2]) end)
+    end
+end)
+
+-- Direct key listeners for speed control (works regardless of settings page)
+local wsConnBegan = UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if not wsCfg.enabled then return end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    if input.KeyCode == Enum.KeyCode.Equals then
+        wsApplySpeed(wsCfg.currentSpeed + wsCfg.speedIncrement)
+        wsHoldingUp = true; wsLastUpTime = tick()
+    elseif input.KeyCode == Enum.KeyCode.Minus then
+        wsApplySpeed(wsCfg.currentSpeed - wsCfg.speedIncrement)
+        wsHoldingDown = true; wsLastDownTime = tick()
+    end
+end)
+
+-- Speed keybinds (bonus: register with settings page if available)
+if _G.UNS_AddScriptShortcut then
+    _G.UNS_AddScriptShortcut("Speed +", function()
+        if wsCfg.enabled then
+            wsApplySpeed(wsCfg.currentSpeed + wsCfg.speedIncrement)
+            wsHoldingUp = true; wsLastUpTime = tick()
+        end
+    end, {mode = 1, key1 = "Equals"})
+    _G.UNS_AddScriptShortcut("Speed -", function()
+        if wsCfg.enabled then
+            wsApplySpeed(wsCfg.currentSpeed - wsCfg.speedIncrement)
+            wsHoldingDown = true; wsLastDownTime = tick()
+        end
+    end, {mode = 1, key1 = "Minus"})
+    _G.UNS_AddScriptShortcut("Speed Reset", function()
+        if wsCfg.enabled then wsApplySpeed(wsCfg.gameDefaultSpeed) end
+    end)
+end
+
+-- Hold-to-repeat for speed keys
+local function wsKeycodeFromName(n)
+    local ok, kc = pcall(function() return Enum.KeyCode[n] end)
+    return (ok and kc) or Enum.KeyCode.Unknown
+end
+local wsUpKeyCode = wsKeycodeFromName("Equals")
+local wsDownKeyCode = wsKeycodeFromName("Minus")
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    if input.KeyCode == wsUpKeyCode then wsHoldingUp = false end
+    if input.KeyCode == wsDownKeyCode then wsHoldingDown = false end
+end)
+task.spawn(function()
+    while task.wait(0.05) do
+        if not wsRun then break end
+        if wsCfg.enabled then
+            local now = tick()
+            if wsHoldingUp and (now - wsLastUpTime) >= WS_HOLD_RATE then
+                wsApplySpeed(wsCfg.currentSpeed + wsCfg.speedIncrement)
+                wsLastUpTime = now
+            end
+            if wsHoldingDown and (now - wsLastDownTime) >= WS_HOLD_RATE then
+                wsApplySpeed(wsCfg.currentSpeed - wsCfg.speedIncrement)
+                wsLastDownTime = now
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  Keybind Registrations
+-- ============================================================
+if _G.UNS_AddScriptShortcut then
+    _G.UNS_AddScriptShortcut("Noclip", function()
+        local new = not noclipEnabled; toggleNoclip(new)
+        if _G.UNScripts and _G.UNScripts.SetToggleByLabel then _G.UNScripts.SetToggleByLabel("Noclip", new) end
+    end)
+    _G.UNS_AddScriptShortcut("Float", function()
+        local new = not floatEnabled; toggleFloat(new)
+        if _G.UNScripts and _G.UNScripts.SetToggleByLabel then _G.UNScripts.SetToggleByLabel("Float", new) end
+    end)
+    _G.UNS_AddScriptShortcut("Vfly", function()
+        local new = not flyEnabled; toggleFly(new)
+        if _G.UNScripts and _G.UNScripts.SetToggleByLabel then _G.UNScripts.SetToggleByLabel("Vfly", new) end
+    end)
+end
 
 -- ============================================================
 --  Cleanup
@@ -1091,11 +1597,13 @@ local combinedCleanup = function()
     if clickTPConn then clickTPConn:Disconnect(); clickTPConn = nil end
 
     if floatInputConn then floatInputConn:Disconnect(); floatInputConn = nil end
-    toggleNoclip(false); toggleFly(false); toggleFloat(false)
-    stopESPLoop()
+    toggleNoclip(false); toggleFly(false); toggleFloat(false); toggleAntiFling(false)
+    stopESPLoop(); wsStopCFrame(); wsStopInstantStop()
+    if wsConnBegan then wsConnBegan:Disconnect(); wsConnBegan = nil end
     clearF3XTools(); clearTPTool()
     infJumpEnabled = false; clickTPEnabled = false
     f3xEnabled = false; tptoolActive = false
+    wsRun = false
 end
 _G.UNS_CombinedCleanup = combinedCleanup
 table.insert(_G.UNS_CleanupList, combinedCleanup)
