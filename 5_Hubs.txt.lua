@@ -35,7 +35,6 @@ scripts:CreateButton("mois7", function() loadScript("https://api.luarmor.net/fil
 
 -- UNScripts
 local un = hubTab:CreateSection("UNScripts")
-un:CreateButton("UNScripts Fling", function() loadScript("https://raw.githubusercontent.com/mike9993/UNscript-fling-/refs/heads/main/FlingScript%20V.4.lua") end)
 un:CreateButton("UNScripts Fling", function()
     local urls = {
         "https://raw.githubusercontent.com/mike9993/UNscripts/refs/heads/main/6%20UNScripts_Secondary_UI.lua",
@@ -50,15 +49,15 @@ un:CreateButton("UNScripts Fling", function()
                 local fn, err = loadstring(code)
                 if fn then
                     local s, e2 = pcall(fn)
-                    if not s then warn("UNTapFling: " .. names[i] .. " error: " .. tostring(e2)) end
+                    if not s then warn("UNFling: " .. names[i] .. " error: " .. tostring(e2)) end
                 else
-                    warn("UNTapFling: " .. names[i] .. " compile error: " .. tostring(err))
+                    warn("UNFling: " .. names[i] .. " compile error: " .. tostring(err))
                 end
             else
-                warn("UNTapFling: " .. names[i] .. " empty response")
+                warn("UNFling: " .. names[i] .. " empty response")
             end
         end)
-        if not ok then warn("UNTapFling: " .. names[i] .. " fetch failed: " .. tostring(result)) end
+        if not ok then warn("UNFling: " .. names[i] .. " fetch failed: " .. tostring(result)) end
         if i == 1 then
             for _ = 1, 100 do
                 if _G.UNScripts_Secondary and _G.UNScripts_Secondary.MainPage then break end
