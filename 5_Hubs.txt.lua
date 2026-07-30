@@ -36,7 +36,7 @@ scripts:CreateButton("mois7", function() loadScript("https://api.luarmor.net/fil
 -- UNScripts
 local un = hubTab:CreateSection("UNScripts")
 un:CreateButton("UNScripts Fling", function() loadScript("https://raw.githubusercontent.com/mike9993/UNscript-fling-/refs/heads/main/FlingScript%20V.4.lua") end)
-un:CreateButton("UNTapFling", function()
+un:CreateButton("UNScripts Fling", function()
     local urls = {
         "https://raw.githubusercontent.com/mike9993/UNscripts/refs/heads/main/6%20UNScripts_Secondary_UI.lua",
         "https://raw.githubusercontent.com/mike9993/UNscripts/refs/heads/main/7%20UNScripts_Secondary_Settings_Plugin.lua",
@@ -67,7 +67,6 @@ un:CreateButton("UNTapFling", function()
         end
     end
 end)
-un:CreateButton("Advanced Walk Speed", function() loadScript("https://raw.githubusercontent.com/mike9993/Advance-walk-speed./refs/heads/main/AdvancedWalkSpeed%20v7.lua") end)
-un:CreateButton("Advanced Invis", function() loadScript("https://raw.githubusercontent.com/mike9993/UN-Invis/refs/heads/main/advanced_invis.lua") end)
+
 
 print("[UNScripts] Hubs Plugin loaded")
