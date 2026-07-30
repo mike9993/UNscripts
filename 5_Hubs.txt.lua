@@ -36,7 +36,37 @@ scripts:CreateButton("mois7", function() loadScript("https://api.luarmor.net/fil
 -- UNScripts
 local un = hubTab:CreateSection("UNScripts")
 un:CreateButton("UNScripts Fling", function() loadScript("https://raw.githubusercontent.com/mike9993/UNscript-fling-/refs/heads/main/FlingScript%20V.4.lua") end)
-un:CreateButton("UNTapFling", function() loadScript("https://raw.githubusercontent.com/mike9993/TapFling/refs/heads/main/FlingScriptUN.3.txt") end)
+un:CreateButton("UNTapFling", function()
+    local urls = {
+        "https://raw.githubusercontent.com/mike9993/UNscripts/refs/heads/main/6%20UNScripts_Secondary_UI.lua",
+        "https://raw.githubusercontent.com/mike9993/UNscripts/refs/heads/main/7%20UNScripts_Secondary_Settings_Plugin.lua",
+        "https://raw.githubusercontent.com/mike9993/UNscripts/refs/heads/main/8%20FlingPlugin.lua",
+    }
+    local names = {"Secondary Host", "Secondary Settings", "Fling Plugin"}
+    for i, url in ipairs(urls) do
+        local ok, result = pcall(function()
+            local code = game:HttpGet(url, true)
+            if code and #code >= 10 then
+                local fn, err = loadstring(code)
+                if fn then
+                    local s, e2 = pcall(fn)
+                    if not s then warn("UNTapFling: " .. names[i] .. " error: " .. tostring(e2)) end
+                else
+                    warn("UNTapFling: " .. names[i] .. " compile error: " .. tostring(err))
+                end
+            else
+                warn("UNTapFling: " .. names[i] .. " empty response")
+            end
+        end)
+        if not ok then warn("UNTapFling: " .. names[i] .. " fetch failed: " .. tostring(result)) end
+        if i == 1 then
+            for _ = 1, 100 do
+                if _G.UNScripts_Secondary and _G.UNScripts_Secondary.MainPage then break end
+                task.wait(0.5)
+            end
+        end
+    end
+end)
 un:CreateButton("Advanced Walk Speed", function() loadScript("https://raw.githubusercontent.com/mike9993/Advance-walk-speed./refs/heads/main/AdvancedWalkSpeed%20v7.lua") end)
 un:CreateButton("Advanced Invis", function() loadScript("https://raw.githubusercontent.com/mike9993/UN-Invis/refs/heads/main/advanced_invis.lua") end)
 
